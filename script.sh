@@ -4,7 +4,7 @@
 SRR=$1
 #Output="/home/valenzuela/data/scanwolf/wolf1/mapped/Scanwolf1"
 #FASTQ="/home/valenzuela/data/scanwolf/wolf1/trimmed/ERR1990143"
-GenomRef="/mnt/10TB1/mapping_pipeline/GCF_000002985.6_WBcel235_genomic.fna"
+GenomRef=$2
 threads=32
 
 ## its imporatant to source conda configuration from home folders
