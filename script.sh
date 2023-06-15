@@ -2,17 +2,17 @@
 
 # requiers pigz !
 SRR=$1
-#Output="/home/valenzuela/data/scanwolf/wolf1/mapped/Scanwolf1"
-#FASTQ="/home/valenzuela/data/scanwolf/wolf1/trimmed/ERR1990143"
 GenomRef=$2
-threads=32
+threads=16
 
-## its imporatant to source conda configuration from home folders
-source /home/graujh/miniconda3/etc/profile.d/conda.sh
-#source /home/graujh/miniconda3/pkgs/conda-22.9.0-py38h06a4308_0/etc/profile.d/conda.sh
 # incase you have a big cluster make sure to load the conda module
-# module load  tools/conda/23.1.0
-#source /share/apps/tools/python/3.8/etc/profile.d/conda.sh
+module load tools/conda/23.1.0
+source /share/apps/tools/python/3.8/etc/profile.d/conda.sh
+
+#otherwise you have to load the conda config, here are some examples:
+#source /home/graujh/miniconda3/etc/profile.d/conda.sh
+#source /home/graujh/miniconda3/pkgs/conda-22.9.0-py38h06a4308_0/etc/profile.d/conda.sh
+
 
 
 # check if genome exists, otherwise exit #######################################
@@ -26,9 +26,6 @@ check_file_exists() {
 }
 
 check_file_exists $GenomRef
-
-
-
 
 # Check and install conda packages #############################################
 
@@ -64,21 +61,20 @@ check_and_install_conda_package() {
 }
 
 install_necessary() {
-    check_and_install_conda_package "bwaMP" "bwa" "0.7.17" "bioconda"
+    check_and_install_conda_package "bwaMP" "bwa-mem2" "2.2.1" "bioconda"
+    check_and_install_conda_package "bwaMP" "samtools" "1.17" "bioconda"
     check_and_install_conda_package "sra-toolsMP" "sra-tools" "3.0.3" "bioconda"
-    check_and_install_conda_package "cutadaptMP" "cutadapt" "4.3" "bioconda"
-    check_and_install_conda_package "samtoolsMP" "samtools" "1.17" "bioconda"
+    check_and_install_conda_package "fastpMP" "fastp" "0.23.4" "bioconda"
     check_and_install_conda_package "bcftoolsMP" "bcftools" "1.17" "bioconda"
     check_and_install_conda_package "mosdepthMP" "mosdepth" "0.3.3" "bioconda"
     check_and_install_conda_package "mahajrodMP" "mavr" "0.97" "mahajrod"
-    check_and_install_conda_package "mahajrodMP" "RouToolPa" "0.100" "mahajrod"
-    check_and_install_conda_package "bedtoolsMP" "bedtools" "2.31.0" "bioconda"    
+    check_and_install_conda_package "bedtoolsMP" "bedtools" "2.31.0" "bioconda" 
 }
 
 install_necessary
 
 
-# Check dependencies script ###################################################
+# Check dependencies flag ###################################################
 if [[ "$1" == "--check_dependencies" ]]; then
 	echo "checking dependencies and exiting thereafter"
 	install_necessary
@@ -98,8 +94,8 @@ if [ ! -f "$SRR.R2_clipped.fastq.gz" ]; then
 	else
 	    echo "fasterq-dump is not found. Downloading and installing..."
 
-	    # Download the latest fasterq-dump binary from NCBI
-	    wget https://ftp.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current-ubuntu64.tar.gz
+	    # remove previos setup and download the latest fasterq-dump binary from NCBI
+	    rm -rf sratool* && wget https://ftp.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current-ubuntu64.tar.gz
 
 	    # Extract the contents of the tarball
 	    tar -xf sratoolkit.current-ubuntu64.tar.gz && rm sratoolkit.current-ubuntu64.tar.gz
@@ -118,48 +114,40 @@ if [ ! -f "$SRR.R2_clipped.fastq.gz" ]; then
 
 
 
-
-	# Download and convert to FASTQ ################################################
+	## Download and convert to FASTQ ################################################
 	$fasterq_dump $SRR --outdir . --threads $threads --split-3 --verbose
 	echo "finished fasterq-dump"
 
-	####  cutadapt adapter removal
-	# activate cutadapt
-	conda activate cutadaptMP
-
-	cutadapt --cores $threads -a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA \
-		-A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -e 0.15 --match-read-wildcards \
-		-o $SRR.R1_clipped.fastq.gz \
-		-p $SRR.R2_clipped.fastq.gz \
-		$SRR'_1.fastq' \
-		$SRR'_2.fastq' \
-		> $SRR'_clipped.log' 2>$SRR'_clipped.err'
-
+	
+	# FASTP adapter and quality trimming ###########################################
+	conda activate fastpMP
+	
+	fastp --in1 $SRR'_1.fastq' --in2 $SRR'_2.fastq' \
+	 --out1 $SRR.R1_clipped.fastq.gz --out2 $SRR.R2_clipped.fastq.gz \
+	 --qualified_quality_phred 15 --unqualified_percent_limit 40 --average_qual 30 -l 50 \
+	 -h $SRR'.fastp.html' -j $SRR'.fastp.json' --correction --thread $threads 1>$SRR.fastp.log 2>$SRR.fastp.err \
+	 && rm  $SRR'_1.fastq' $SRR'_2.fastq'
+	 
 	conda deactivate
-	echo "finished cutadapter"
+	echo "finished fastp quality and adapter removal"
+	
 
 fi
 
 #### BWA alignment #############################################################
 conda activate bwaMP
-bwa mem -t $threads $GenomRef $SRR.R1_clipped.fastq.gz $SRR.R2_clipped.fastq.gz 2>bwa.log | pigz - >$SRR.onref.sam
-conda deactivate
-echo "finished bwa mapping"
 
-
-
-#### Samtools ##################################################################
-conda activate samtoolsMP
-
-samtools view -@ $threads -b -h -F 4 $SRR.onref.sam -o $SRR.onref.bam
-samtools sort -@ $threads -n $SRR.onref.bam -o $SRR.onref_aligned_sortedname.bam
-samtools fixmate $SRR.onref_aligned_sortedname.bam $SRR.onref_aligned_sorted_fix.bam
-samtools sort -@ $threads $SRR.onref_aligned_sorted_fix.bam -o $SRR.onref_aligned_sorted_fix_sorted.bam
-samtools rmdup -S $SRR.onref_aligned_sorted_fix_sorted.bam $SRR.onref_aligned_sorted_fix_sorted_rmdup.bam
-samtools index $SRR.onref_aligned_sorted_fix_sorted_rmdup.bam
+bwa-mem2 mem -t $threads -M -R '@RG\tID:sample\tLB:sample\tPL:ILLUMINA\tSM:sample' \
+	$GenomRef \
+	$SRR.R1_clipped.fastq.gz $SRR.R2_clipped.fastq.gz 2>bwa.log | \
+	samtools sort -@12 -n -o /dev/stdout | \
+	samtools fixmate - /dev/stdout | \
+	samtools sort -@ 16 -o /dev/stdout | \
+	samtools rmdup -S - $SRR.onref_aligned_sorted_fix_sorted_rmdup.bam \
+	&& samtools index $SRR.onref_aligned_sorted_fix_sorted_rmdup.bam
 
 conda deactivate
-echo "finished samtools"
+echo "finished bwa+samtools"
 
 
 
@@ -223,4 +211,3 @@ bcftools filter -i FMT/GT=\"het\" -O v $SRR.mahajrod.masked.SNP.vcf >$SRR.mahajr
 
 conda deactivate
 echo "finished bcftools"
-
